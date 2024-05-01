@@ -2,7 +2,7 @@ const { SlashCommandBuilder } = require('discord.js');
 
 class Player {
 	constructor(clientObj) {
-		this.numDice = 5;
+		this.numDice = 2;
 		this.dice = [];
 		this.clientObj = clientObj;
 	}
@@ -21,12 +21,9 @@ class Player {
 class Game {
 	constructor(clientObj, opponentObj) {
 		// Init players
-		this.player1 = new Player(clientObj);
-		this.player2 = new Player(opponentObj);
+		this.currentPlayer = new Player(clientObj);
+		this.nonCurrentPlayer = new Player(opponentObj);
 
-		// Store current player and game over state
-		this.currentPlayer = this.player1;
-		this.nonCurrentPlayer = this.player2;
 		this.gameOver = false;
 		this.roundOver = false;
 
@@ -36,7 +33,7 @@ class Game {
 		this.updatedBid = this.currentBid;
 	}
 	updateTotalDice() {
-		this.totalDice = this.player1.numDice + this.player2.numDice;
+		this.totalDice = this.currentPlayer.numDice + this.nonCurrentPlayer.numDice;
 	}
 	swapCurrentPlayer() {
 		let temp = this.currentPlayer;
@@ -44,8 +41,12 @@ class Game {
 		this.nonCurrentPlayer = temp;
 	}
 	rollDice() {
-		this.player1.rollDiceSet();
-		this.player2.rollDiceSet();
+		this.currentPlayer.rollDiceSet();
+		this.nonCurrentPlayer.rollDiceSet();
+	}
+	async sendDiceInfo() {
+		await this.currentPlayer.clientObj.send(`Your dice: ${mapIntsToEmojis(this.currentPlayer.dice).join('')}\nTotal Dice: ${this.totalDice}\nCurrent Bet: ${this.currentBid}$`);
+		await this.nonCurrentPlayer.clientObj.send(`Your dice: ${mapIntsToEmojis(this.nonCurrentPlayer.dice).join('')}\nTotal Dice: ${this.totalDice}\nCurrent Bet: ${this.currentBid}$`);
 	}
 }
 
@@ -79,8 +80,8 @@ async function sendMessage(text, choices, client) {
 }
 async function handleTurn(game, lastDieBidOn, lastOccurrenceOfDie) {
 	let text = 'Do you want to double?:\n' +
-	':one: Yes\n' +
-	':two: No\n';
+		':one: Yes\n' +
+		':two: No\n';
 
 	let choices = range(1, 3);
 	let choice = await sendMessage(text, choices, game.currentPlayer.clientObj);
@@ -88,7 +89,7 @@ async function handleTurn(game, lastDieBidOn, lastOccurrenceOfDie) {
 	const doubleBool = (choice === 1) ? true : false;
 
 
-	text = 'It\'s your turn! React to choose an action:\n' +		// add call bluff option when apropriate
+	text = 'It\'s your turn!:\n' +		// add call bluff option when apropriate
 		':one: Bid\n' +
 		':two: Call Bluff\n' +
 		':three: Fold';
@@ -111,39 +112,32 @@ async function handleTurn(game, lastDieBidOn, lastOccurrenceOfDie) {
 function callBluff(game, dieBidOn, guessedOccurrenceOfDie) {
 	const occurrences = {};
 
-	game.player1.dice.forEach(num => {
+	game.currentPlayer.dice.forEach(num => {
 		occurrences[num] = (occurrences[num] || 0) + 1;
 	});
-	game.player2.dice.forEach(num => {
+	game.nonCurrentPlayer.dice.forEach(num => {
 		occurrences[num] = (occurrences[num] || 0) + 1;
 	});
-	console.log(occurrences);
+
 	let occurrencesOfDieBidOn = occurrences[dieBidOn];
-	if (dieBidOn != 1) {
+	if (dieBidOn != 1 && occurrences[1]) {
 		occurrencesOfDieBidOn += occurrences[1];
 	}
-	console.log(occurrencesOfDieBidOn, guessedOccurrenceOfDie)
 	return occurrencesOfDieBidOn >= guessedOccurrenceOfDie;
 }
-
 async function bid(client, lastDieBidOn, lastOccurrenceOfDie, totalDice) {
 	let text = 'What die do you want to bid on?'
 	let choices = range(1, 7);
 
 	const dieBidOn = await sendMessage(text, choices, client)
-	console.log(lastDieBidOn, dieBidOn);
 	const x = (lastDieBidOn && lastDieBidOn >= dieBidOn) ? 1 : 0;
 
-	console.log(x);
 	text = `How many occurrence of ${dieBidOn}?`
 	choices = range(lastOccurrenceOfDie + x, totalDice + 1);
 
 	const occurrenceOfDie = await sendMessage(text, choices, client)
 
 	return [dieBidOn, occurrenceOfDie]
-}
-async function sendDiceInfo(player, game) {
-	await player.clientObj.send(`Your dice: ${mapIntsToEmojis(player.dice).join('')}\nTotal Dice: ${game.totalDice}\nCurrent Bet: ${game.currentBid}$`);
 }
 
 function mapIntsToEmojis(integers) {
@@ -203,9 +197,7 @@ module.exports = {
 			game.rollDice();
 			game.updateTotalDice();
 
-			await sendDiceInfo(game.player1, game);
-			await sendDiceInfo(game.player2, game);
-
+			await game.sendDiceInfo()
 
 			let dieBidOn = 0;
 			let occurrenceOfDie = 1;
@@ -213,73 +205,66 @@ module.exports = {
 			game.roundOver = false;
 
 			while (!game.roundOver) {
-				const result = await handleTurn(game, dieBidOn, occurrenceOfDie, game.totalDice);
+				[dieBidOn, occurrenceOfDie, action, doubleBool] = await handleTurn(game, dieBidOn, occurrenceOfDie, game.totalDice);
 
-				console.log(result);
-
-				dieBidOn = result[0];
-				occurrenceOfDie = result[1];
-				gameState = result[2];
-				doubleBool = result[3];
-
-				console.log(gameState);
-
-				if (gameState !== "fold") {
-					game.currentBid = game.updatedBid;
-					console.log(game.currentBid);
-				}
+				action !== "fold" ? game.currentBid = game.updatedBid : null;
 
 				if (doubleBool) {
 					game.updatedBid *= 2;
 					await game.nonCurrentPlayer.clientObj.send(`${game.currentPlayer.clientObj.username} doubled the bet to ${game.updatedBid}$`);
 				}
 
-				if (gameState === "bid") {
-					game.swapCurrentPlayer();
-					await game.currentPlayer.clientObj.send(`${game.nonCurrentPlayer.clientObj.username} bid on ${occurrenceOfDie} ${dieBidOn}s`);
-				}
-				else if (gameState === "bluffSuccess") {
-					game.swapCurrentPlayer();
-					await game.nonCurrentPlayer.clientObj.send(`${game.currentPlayer.clientObj.username} lost a die`);
-					await game.currentPlayer.clientObj.send(`${game.nonCurrentPlayer.clientObj.username} called your bluff. You lost a die`);
-					game.currentPlayer.numDice--;
+				switch (action) {
+					case "bid":
+						await game.nonCurrentPlayer.clientObj.send(`${game.currentPlayer.clientObj.username} bid on ${occurrenceOfDie} ${dieBidOn}s`);
+						break;
 
-					if (game.currentPlayer.numDice === 0) {
-						await game.nonCurrentPlayer.clientObj.send(`${game.nonCurrentPlayer.clientObj.username} lost all there die. You won!`);
-						await game.currentPlayer.clientObj.send(`You lost all your dice you lose.`);
-					}
-					game.roundOver = true;
-				}
-				else if (gameState === "bluffFail") {
-					await game.currentPlayer.clientObj.send(`${game.nonCurrentPlayer.clientObj.username} wasnt bluffing you lost a die`);
-					await game.nonCurrentPlayer.clientObj.send(`${game.currentPlayer.clientObj.username} called your bluff. They lost a die`);
-					game.currentPlayer.numDice--;
+					case "fold":
+						await game.currentPlayer.clientObj.send(`You folded and lost ${game.currentBid}$`);
+						await game.nonCurrentPlayer.clientObj.send(`${game.currentPlayer.clientObj.username} folded you win ${game.currentBid}$`);
+						game.roundOver = true;
+						game.gameOver = true;
+						break;
 					
-					if (game.currentPlayer.numDice === 0) {
-						await game.nonCurrentPlayer.clientObj.send(`${game.nonCurrentPlayer.clientObj.username} lost all there die. You won!`);
-						await game.currentPlayer.clientObj.send(`You lost all your dice you lose.`);
-					}
-					game.roundOver = true;
-				}
-				else if (gameState === "fold") {
-					game.swapCurrentPlayer();
-					await game.nonCurrentPlayer.clientObj.send(`You folded and lost ${game.currentBid}$`);
-					await game.currentPlayer.clientObj.send(`${game.nonCurrentPlayer.clientObj.username} folded you win ${game.currentBid}$`);
-					game.roundOver = true;
-					game.gameOver = true;
+					case "bluffSuccess":
+					case "bluffFail":
+						const bluffSuccess = action === "bluffSuccess";
+						const playerLost = bluffSuccess ? game.nonCurrentPlayer : game.currentPlayer;
+						const playerWon = bluffSuccess ? game.currentPlayer : game.nonCurrentPlayer;
+
+						if (bluffSuccess) {
+							await game.currentPlayer.clientObj.send(`${game.nonCurrentPlayer.clientObj.username} was bluffing, they lost a die`);
+							await game.nonCurrentPlayer.clientObj.send(`${game.currentPlayer.clientObj.username} called your bluff,  you lost a die`);
+						}
+						else {
+							await game.currentPlayer.clientObj.send(`${game.nonCurrentPlayer.clientObj.username} wasn't bluffing, you lost a die`);
+							await game.nonCurrentPlayer.clientObj.send(`${game.currentPlayer.clientObj.username} called your bluff, they lost a die`);
+						}
+						playerLost.numDice--;
+					
+						if (playerLost.numDice === 0) {
+							await playerWon.clientObj.send(`${playerLost.clientObj.username} lost all their dice. You won ${game.currentBid}$`);
+							await playerLost.clientObj.send(`You lost all your dice. You lose ${game.currentBid}$.`);
+							game.gameOver = true;
+						}
+					
+						game.roundOver = true;
+						if (!bluffSuccess) {
+							game.swapCurrentPlayer();
+						}
+						break;
+
 				}
 
+				game.swapCurrentPlayer();
 			}
 
 		}
 
 	}
 }
-// Deprecated features:
-// game.player1 and game.player2
 
 
 
-// end game once either player is out of dice
-// make the main part use a switch instead of else if
 // stop letting call bluff on first move
+// decide wether and handle doubling on a bluffFail/Success
